@@ -2,81 +2,88 @@ import requests
 import cv2
 from dotenv import load_dotenv
 import os
+import threading
 
 # Load .env file
 load_dotenv()
 
 # Azure Custom Vision Configuration
-PREDICTION_KEY = os.getenv("PREDICTION_KEY")
-ENDPOINT = os.getenv("ENDPOINT")
-PROJECT_ID = os.getenv("PROJECT_ID")
-ITERATION_NAME = os.getenv("ITERATION_NAME")
+PREDICTION_KEY = os.getenv("PREDICTION_KEY")  # Your Prediction Key from .env
+ENDPOINT = os.getenv("ENDPOINT")  # Your Endpoint from .env
 
 headers = {
     "Prediction-Key": PREDICTION_KEY,
     "Content-Type": "application/octet-stream",
 }
 
-
 def detect_image(image):
     """Send the image to the Azure Custom Vision API for prediction."""
     response = requests.post(
-        f"{ENDPOINT}/customvision/v3.0/Prediction/{PROJECT_ID}/classify/iterations/{ITERATION_NAME}/image",
+        f"{ENDPOINT}",
         headers=headers,
         data=image
     )
-
     if response.status_code == 200:
-        predictions = response.json()["predictions"]
-        return predictions
+        return response.json().get("predictions", [])
     else:
         print("Error:", response.status_code, response.text)
         return []
 
-
 def process_predictions(predictions):
-    """Extract the most likely tag and its probability."""
+    """Extract and display the most likely tag and its probability."""
     for prediction in predictions:
         print(f"Tag: {prediction['tagName']}, Probability: {prediction['probability']:.2f}")
     return predictions[0] if predictions else None
 
+def async_detect_image(image, callback):
+    """Perform asynchronous prediction."""
+    def task():
+        predictions = detect_image(image)
+        callback(predictions)
+    thread = threading.Thread(target=task)
+    thread.start()
+
+def prediction_callback(predictions):
+    """Handle predictions returned from the async_detect_image."""
+    if predictions:
+        top_prediction = process_predictions(predictions)
+        if top_prediction:
+            tag = top_prediction['tagName']
+            probability = top_prediction['probability']
+            print(f"Detected: {tag} ({probability:.2f})")
 
 def main():
     # Start OpenCV Video Capture
     cap = cv2.VideoCapture(0)
 
+    # Optimize frame resolution
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
     if not cap.isOpened():
         print("Error: Cannot access the camera.")
         return
 
+    frame_count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to capture frame.")
             break
 
-        # Display the real-time feed
+        # Process every 5th frame
+        if frame_count % 5 == 0:
+            _, image_encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            async_detect_image(image_encoded.tobytes(), prediction_callback)
+
+        frame_count += 1
         cv2.imshow("Real-Time Feed", frame)
 
-        # Send frame to Azure Custom Vision for prediction
-        _, image_encoded = cv2.imencode('.jpg', frame)
-        predictions = detect_image(image_encoded.tobytes())
-
-        # Process and display predictions
-        if predictions:
-            top_prediction = process_predictions(predictions)
-            if top_prediction:
-                tag = top_prediction['tagName']
-                probability = top_prediction['probability']
-                print(f"Detected: {tag} ({probability:.2f})")
-
-        # Break loop on 'q' key
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()
